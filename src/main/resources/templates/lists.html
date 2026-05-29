@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Mailing Lists')}"></head>
+<body>
+<nav th:replace="~{fragments :: nav}"></nav>
+<main>
+    <div th:replace="~{fragments :: alerts}"></div>
+    <div class="row">
+        <h1>Mailing lists</h1>
+        <span class="spacer"></span>
+        <a class="btn" th:href="@{/lists/new}">+ New list</a>
+    </div>
+
+    <div class="card" th:if="${lists.isEmpty()}">
+        <p class="muted">No mailing lists yet. <a class="link" th:href="@{/lists/new}">Create one →</a></p>
+    </div>
+
+    <div class="card" th:each="l : ${lists}">
+        <div class="row">
+            <h2 style="margin:0" th:text="${l.name}">Name</h2>
+            <span class="spacer"></span>
+            <a class="btn small secondary" th:href="@{/lists/{id}/edit(id=${l.id})}">Edit</a>
+            <form th:action="@{/lists/{id}/delete(id=${l.id})}" method="post" style="margin:0"
+                  onsubmit="return confirm('Delete this mailing list?');">
+                <button class="btn small danger" type="submit">Delete</button>
+            </form>
+        </div>
+        <p class="muted" th:if="${l.description}" th:text="${l.description}"></p>
+        <p class="muted"><strong th:text="${l.recipients.size()}">0</strong> recipients</p>
+        <div>
+            <span th:each="r : ${l.recipients}" class="pill SENT" style="margin:2px" th:text="${r}">a@b.com</span>
+        </div>
+    </div>
+</main>
+</body>
+</html>

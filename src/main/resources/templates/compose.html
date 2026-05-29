@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Compose')}"></head>
+<body>
+<nav th:replace="~{fragments :: nav}"></nav>
+<main>
+    <div th:replace="~{fragments :: alerts}"></div>
+    <h1>Compose campaign</h1>
+    <div class="card">
+        <form th:action="@{/campaigns}" method="post">
+            <label for="mailingListId">Mailing list</label>
+            <select id="mailingListId" name="mailingListId">
+                <option value="">— none —</option>
+                <option th:each="l : ${lists}" th:value="${l.id}"
+                        th:text="${l.name} + ' (' + ${l.recipients.size()} + ' recipients)'">List</option>
+            </select>
+
+            <label for="extraRecipients">Additional recipients</label>
+            <input type="text" id="extraRecipients" name="extraRecipients"
+                   placeholder="comma- or space-separated, e.g. a@x.com, b@y.com"/>
+            <p class="muted">You may pick a list, add ad-hoc recipients, or both. Duplicates are removed.</p>
+
+            <label for="subject">Subject</label>
+            <input type="text" id="subject" name="subject" required/>
+
+            <label for="body">Body</label>
+            <textarea id="body" name="body" required placeholder="Plain text or HTML. A tracking pixel is added automatically."></textarea>
+
+            <div class="row" style="margin-top:16px">
+                <button class="btn" type="submit">Send campaign</button>
+                <a class="btn secondary" th:href="@{/campaigns}">Cancel</a>
+            </div>
+        </form>
+    </div>
+</main>
+</body>
+</html>

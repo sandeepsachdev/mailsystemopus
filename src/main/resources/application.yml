@@ -1,0 +1,79 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gmail-mailing-system
+
+  # ---------------------------------------------------------------------------
+  # Outgoing mail (Gmail SMTP). Supply credentials via environment variables:
+  #   GMAIL_USERNAME = your.account@gmail.com
+  #   GMAIL_APP_PASSWORD = a 16-char Google "App Password" (NOT your normal password)
+  # Create an app password at https://myaccount.google.com/apppasswords
+  # (requires 2-Step Verification to be enabled on the Google account).
+  # ---------------------------------------------------------------------------
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${GMAIL_USERNAME:}
+    password: ${GMAIL_APP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+        transport:
+          protocol: smtp
+
+  datasource:
+    url: jdbc:h2:file:./data/mailsystem
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  thymeleaf:
+    cache: false
+
+# ---------------------------------------------------------------------------
+# Application-specific mail configuration.
+# ---------------------------------------------------------------------------
+mailsystem:
+  # Public base URL the recipient's mail client can reach to load the tracking pixel.
+  # When testing locally this is http://localhost:8080; in production set it to a
+  # publicly reachable URL so opens can actually be recorded.
+  base-url: ${MAILSYSTEM_BASE_URL:http://localhost:8080}
+
+  # The "From" address shown to recipients (defaults to the Gmail username).
+  from-address: ${MAILSYSTEM_FROM:${GMAIL_USERNAME:}}
+  from-name: ${MAILSYSTEM_FROM_NAME:Mail System}
+
+  # IMAP settings used to read the Gmail mailbox back for bounces and replies.
+  imap:
+    enabled: ${MAILSYSTEM_IMAP_ENABLED:true}
+    host: imap.gmail.com
+    port: 993
+    username: ${GMAIL_USERNAME:}
+    password: ${GMAIL_APP_PASSWORD:}
+    folder: INBOX
+    # How often (ms) to poll the mailbox for new bounces/replies.
+    poll-interval-ms: 60000
+
+  # A delivery that has not bounced within this many minutes is treated as "received"
+  # (successfully delivered) even if the recipient never opened it.
+  delivered-grace-minutes: 10
+
+logging:
+  level:
+    com.example.mailsystem: INFO

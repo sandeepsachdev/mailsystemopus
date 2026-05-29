@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Campaigns')}"></head>
+<body>
+<nav th:replace="~{fragments :: nav}"></nav>
+<main>
+    <div th:replace="~{fragments :: alerts}"></div>
+    <div class="row">
+        <h1>Campaigns</h1>
+        <span class="spacer"></span>
+        <a class="btn" th:href="@{/compose}">+ New campaign</a>
+    </div>
+
+    <div class="card" th:if="${campaigns.isEmpty()}">
+        <p class="muted">No campaigns yet. <a class="link" th:href="@{/compose}">Compose your first email →</a></p>
+    </div>
+
+    <div class="card" th:unless="${campaigns.isEmpty()}">
+        <table>
+            <thead>
+            <tr>
+                <th>Subject</th>
+                <th>List</th>
+                <th>Sent</th>
+                <th>Recipients</th>
+                <th>Received</th>
+                <th>Read</th>
+                <th>Bounced</th>
+                <th>Replies</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="c : ${campaigns}">
+                <td><a class="link" th:href="@{/campaigns/{id}(id=${c.id})}" th:text="${c.subject}">Subject</a></td>
+                <td th:text="${c.mailingListName} ?: '—'">—</td>
+                <td class="muted" th:text="${T(com.example.mailsystem.web.Fmt).dt(c.sentAt)}">—</td>
+                <td th:text="${c.totalCount}">0</td>
+                <td th:text="${c.receivedCount}">0</td>
+                <td th:text="${c.readCount}">0</td>
+                <td th:text="${c.bouncedCount}">0</td>
+                <td th:text="${c.repliedCount}">0</td>
+                <td><a class="link" th:href="@{/campaigns/{id}(id=${c.id})}">Details →</a></td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+    <p class="muted">"Sync mailbox" reads your Gmail account over IMAP to detect bounced messages and replies. It also runs automatically in the background.</p>
+</main>
+</body>
+</html>

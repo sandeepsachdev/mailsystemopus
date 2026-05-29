@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Campaign')}"></head>
+<body>
+<nav th:replace="~{fragments :: nav}"></nav>
+<main>
+    <div th:replace="~{fragments :: alerts}"></div>
+    <p><a class="link" th:href="@{/campaigns}">← All campaigns</a></p>
+    <h1 th:text="${campaign.subject}">Subject</h1>
+    <p class="muted">
+        <span th:if="${campaign.mailingListName}">List: <strong th:text="${campaign.mailingListName}">list</strong> · </span>
+        Sent <span th:text="${T(com.example.mailsystem.web.Fmt).dt(campaign.sentAt)}">—</span>
+    </p>
+
+    <div style="margin: 16px 0;">
+        <span class="stat"><div class="n" th:text="${campaign.totalCount}">0</div><div class="l">Recipients</div></span>
+        <span class="stat"><div class="n" th:text="${campaign.receivedCount}">0</div><div class="l">Received</div></span>
+        <span class="stat"><div class="n" th:text="${campaign.readCount}">0</div><div class="l">Read</div></span>
+        <span class="stat"><div class="n" th:text="${campaign.bouncedCount}">0</div><div class="l">Bounced</div></span>
+        <span class="stat"><div class="n" th:text="${campaign.repliedCount}">0</div><div class="l">Replied</div></span>
+    </div>
+
+    <div class="card">
+        <div class="row">
+            <h2 style="margin:0">Per-recipient tracking</h2>
+            <span class="spacer"></span>
+            <form th:action="@{/scan}" method="post" style="margin:0">
+                <button class="btn small secondary" type="submit">↻ Sync mailbox for bounces &amp; replies</button>
+            </form>
+        </div>
+        <table style="margin-top:12px">
+            <thead>
+            <tr>
+                <th>Recipient</th>
+                <th>Status</th>
+                <th>Sent</th>
+                <th>Received</th>
+                <th>Read</th>
+                <th>Opens</th>
+                <th>Bounced</th>
+                <th>Replied</th>
+            </tr>
+            </thead>
+            <tbody>
+            <th:block th:each="d : ${campaign.deliveries}">
+                <tr>
+                    <td th:text="${d.recipientEmail}">a@b.com</td>
+                    <td><span class="pill" th:classappend="${d.status}" th:text="${d.status}">SENT</span></td>
+                    <td class="muted" th:text="${T(com.example.mailsystem.web.Fmt).dt(d.sentAt)}">—</td>
+                    <td class="muted" th:text="${T(com.example.mailsystem.web.Fmt).dt(d.deliveredAt)}">—</td>
+                    <td class="muted" th:text="${T(com.example.mailsystem.web.Fmt).dt(d.firstOpenedAt)}">—</td>
+                    <td th:text="${d.openCount}">0</td>
+                    <td class="muted">
+                        <span th:text="${T(com.example.mailsystem.web.Fmt).dt(d.bouncedAt)}">—</span>
+                        <div th:if="${d.bounceReason}" class="muted" style="font-size:11px" th:text="${d.bounceReason}"></div>
+                    </td>
+                    <td class="muted" th:text="${T(com.example.mailsystem.web.Fmt).dt(d.repliedAt)}">—</td>
+                </tr>
+                <tr th:if="${!d.replies.isEmpty()}">
+                    <td colspan="8" style="border-bottom:1px solid var(--border)">
+                        <div class="reply" th:each="r : ${d.replies}">
+                            <strong th:text="${r.fromAddress}">from</strong>
+                            <span class="muted" th:text="'· ' + ${T(com.example.mailsystem.web.Fmt).dt(r.receivedAt)}"></span>
+                            <div th:text="${r.subject}" style="font-weight:600; margin-top:2px;">subject</div>
+                            <div th:text="${r.snippet}"></div>
+                        </div>
+                    </td>
+                </tr>
+            </th:block>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Message body</h2>
+        <div th:utext="${campaign.body}" style="font-size:14px"></div>
+    </div>
+</main>
+</body>
+</html>
