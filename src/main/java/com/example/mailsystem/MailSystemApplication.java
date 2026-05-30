@@ -2,6 +2,7 @@ package com.example.mailsystem;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -9,10 +10,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  *
  * <p>The application can send campaigns to mailing lists via Gmail SMTP and then read the
  * Gmail mailbox back over IMAP to detect bounces and replies, while a tracking pixel records
- * opens (reads). Scheduling is enabled so the mailbox is polled periodically.
+ * opens (reads). Scheduling is enabled so the mailbox is polled periodically, and async so the
+ * (network-bound) mailbox scan can run off the request thread.
  */
 @SpringBootApplication
 @EnableScheduling
+@EnableAsync
 public class MailSystemApplication {
 
     public static void main(String[] args) {

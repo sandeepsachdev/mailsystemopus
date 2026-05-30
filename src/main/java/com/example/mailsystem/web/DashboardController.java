@@ -99,12 +99,14 @@ public class DashboardController {
 
     @PostMapping("/scan")
     public String scan(RedirectAttributes ra) {
-        try {
-            int examined = mailboxScanService.scan();
+        if (mailboxScanService.isScanning()) {
+            ra.addFlashAttribute("message", "A mailbox sync is already running.");
+        } else {
+            // Run off the request thread: the Gmail connect/auth round-trip can take several
+            // seconds, and the user should not wait on it. Results appear on the next page load.
+            mailboxScanService.triggerAsyncScan();
             ra.addFlashAttribute("message",
-                    "Mailbox scan complete. Examined " + examined + " message(s) for bounces and replies.");
-        } catch (Exception ex) {
-            ra.addFlashAttribute("error", "Mailbox scan failed: " + ex.getMessage());
+                    "Mailbox sync started in the background. Refresh in a moment to see new bounces and replies.");
         }
         return "redirect:/campaigns";
     }

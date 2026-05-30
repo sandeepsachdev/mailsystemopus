@@ -82,11 +82,13 @@ curl -X POST localhost:8080/api/scan
 
 - **Open tracking** depends on the recipient's mail client loading remote images; many clients
   block them by default, so a missing “read” does not necessarily mean the mail was unread.
-- **Mailbox scans are incremental.** The first scan bootstraps over a trailing 14-day window;
-  after that only messages with a new IMAP UID are examined (the high-water mark is persisted in
-  the `scan_state` table). Triage runs on a single batched header prefetch, and full message
-  bodies are downloaded only for confirmed bounces and matched replies — so steady-state scans do
-  little to no network work when there is no new mail.
+- **Mailbox scans are incremental and non-blocking.** The first scan bootstraps over a trailing
+  14-day window; after that only messages with a new IMAP UID are examined (the high-water mark is
+  persisted in the `scan_state` table). Triage runs on a single batched header prefetch, and full
+  message bodies are downloaded only for confirmed bounces and matched replies. The IMAP
+  connection is kept open and reused between scans so the Gmail connect/authenticate handshake is
+  not repaid every poll. The "Sync mailbox" button triggers the scan on a background thread and
+  returns immediately — refresh the page to see new results.
 - Gmail rewrites the outgoing `Message-ID`, so reply matching falls back to sender + subject when
   the original id is not referenced.
 - H2 (file-based, `./data/`) is used for storage out of the box; point `spring.datasource.*` at

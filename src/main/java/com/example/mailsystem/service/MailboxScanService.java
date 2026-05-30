@@ -8,6 +8,7 @@ import com.example.mailsystem.domain.ScanState;
 import com.example.mailsystem.repository.EmailDeliveryRepository;
 import com.example.mailsystem.repository.EmailReplyRepository;
 import com.example.mailsystem.repository.ScanStateRepository;
+import jakarta.annotation.PreDestroy;
 import jakarta.mail.Address;
 import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
@@ -20,6 +21,7 @@ import jakarta.mail.search.ComparisonTerm;
 import jakarta.mail.search.ReceivedDateTerm;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -77,6 +79,10 @@ public class MailboxScanService {
     private final ScanStateRepository scanStateRepository;
     private final AtomicBoolean scanning = new AtomicBoolean(false);
 
+    // Long-lived IMAP connection reused across scans to avoid the connect/auth handshake each time.
+    private Store cachedStore;
+    private Folder cachedFolder;
+
     public MailboxScanService(MailSystemProperties properties,
                               EmailDeliveryRepository deliveryRepository,
                               EmailReplyRepository replyRepository,
@@ -101,6 +107,25 @@ public class MailboxScanService {
     }
 
     /**
+     * Kicks off a scan on a background thread and returns immediately, so the "Sync mailbox" UI
+     * action does not block the HTTP request on the (network-bound) Gmail round-trip. If a scan is
+     * already in progress {@link #scan()} short-circuits, so this is effectively a no-op then.
+     */
+    @Async
+    public void triggerAsyncScan() {
+        try {
+            scan();
+        } catch (Exception ex) {
+            log.warn("Background mailbox scan failed: {}", ex.getMessage());
+        }
+    }
+
+    /** Whether a scan is currently in progress (used by the UI to report status). */
+    public boolean isScanning() {
+        return scanning.get();
+    }
+
+    /**
      * Reads new mailbox messages (those above the last processed UID) and updates deliveries with
      * any bounces/replies found.
      *
@@ -118,6 +143,65 @@ public class MailboxScanService {
             return 0;
         }
 
+        int examined = 0;
+        try {
+            Folder folder = ensureOpenFolder(cfg);
+            UIDFolder uidFolder = (UIDFolder) folder;
+            ScanState state = loadOrInitState(cfg.getFolder(), uidFolder.getUIDValidity());
+
+            Message[] messages = selectNewMessages(folder, uidFolder, state);
+            if (messages.length > 0) {
+                prefetchHeaders(folder, messages);
+            }
+
+            long highestUid = state.getLastUid();
+            for (Message message : messages) {
+                long uid = uidFolder.getUID(message);
+                // getMessagesByUID(start, LASTUID) can echo back the last message even when its
+                // UID is below start; skip anything at or below the high-water mark.
+                if (state.getLastUid() > 0 && uid <= state.getLastUid()) {
+                    continue;
+                }
+                examined++;
+                try {
+                    processMessage(message);
+                } catch (Exception ex) {
+                    log.debug("Failed to process a message during scan: {}", ex.getMessage());
+                }
+                if (uid > highestUid) {
+                    highestUid = uid;
+                }
+            }
+
+            if (highestUid > state.getLastUid()) {
+                state.setLastUid(highestUid);
+                state.setUpdatedAt(Instant.now());
+                scanStateRepository.save(state);
+            }
+        } catch (Exception ex) {
+            // On any IMAP error drop the cached connection so the next scan reconnects cleanly.
+            closeQuietly();
+            throw ex;
+        } finally {
+            scanning.set(false);
+        }
+        log.info("Mailbox scan complete; examined {} new message(s)", examined);
+        return examined;
+    }
+
+    /**
+     * Returns a connected, open IMAP folder, reusing the cached connection when it is still alive.
+     * Reconnecting and re-authenticating to Gmail on every poll is the dominant cost of a scan, so
+     * the {@link Store} and {@link Folder} are kept open between scans and only re-established when
+     * the connection has dropped.
+     */
+    private Folder ensureOpenFolder(MailSystemProperties.Imap cfg) throws Exception {
+        if (cachedFolder != null && cachedFolder.isOpen()
+                && cachedStore != null && cachedStore.isConnected()) {
+            return cachedFolder;
+        }
+        closeQuietly();
+
         Properties props = new Properties();
         props.put("mail.store.protocol", "imaps");
         props.put("mail.imaps.host", cfg.getHost());
@@ -127,52 +211,35 @@ public class MailboxScanService {
         props.put("mail.imaps.timeout", "30000");
 
         Session session = Session.getInstance(props);
-        int examined = 0;
-        try (Store store = session.getStore("imaps")) {
-            store.connect(cfg.getHost(), cfg.getUsername(), cfg.getPassword());
-            Folder folder = store.getFolder(cfg.getFolder());
-            folder.open(Folder.READ_ONLY);
+        cachedStore = session.getStore("imaps");
+        cachedStore.connect(cfg.getHost(), cfg.getUsername(), cfg.getPassword());
+        cachedFolder = cachedStore.getFolder(cfg.getFolder());
+        cachedFolder.open(Folder.READ_ONLY);
+        log.debug("Opened IMAP connection to {} folder '{}'", cfg.getHost(), cfg.getFolder());
+        return cachedFolder;
+    }
+
+    /** Closes the cached folder/store, ignoring errors. Called on shutdown and after IMAP errors. */
+    @PreDestroy
+    void closeQuietly() {
+        if (cachedFolder != null) {
             try {
-                UIDFolder uidFolder = (UIDFolder) folder;
-                ScanState state = loadOrInitState(cfg.getFolder(), uidFolder.getUIDValidity());
-
-                Message[] messages = selectNewMessages(folder, uidFolder, state);
-                if (messages.length > 0) {
-                    prefetchHeaders(folder, messages);
+                if (cachedFolder.isOpen()) {
+                    cachedFolder.close(false);
                 }
-
-                long highestUid = state.getLastUid();
-                for (Message message : messages) {
-                    long uid = uidFolder.getUID(message);
-                    // getMessagesByUID(start, LASTUID) can echo back the last message even when its
-                    // UID is below start; skip anything at or below the high-water mark.
-                    if (state.getLastUid() > 0 && uid <= state.getLastUid()) {
-                        continue;
-                    }
-                    examined++;
-                    try {
-                        processMessage(message);
-                    } catch (Exception ex) {
-                        log.debug("Failed to process a message during scan: {}", ex.getMessage());
-                    }
-                    if (uid > highestUid) {
-                        highestUid = uid;
-                    }
-                }
-
-                if (highestUid > state.getLastUid()) {
-                    state.setLastUid(highestUid);
-                    state.setUpdatedAt(Instant.now());
-                    scanStateRepository.save(state);
-                }
-            } finally {
-                folder.close(false);
+            } catch (Exception ignored) {
+                // best-effort
             }
-        } finally {
-            scanning.set(false);
+            cachedFolder = null;
         }
-        log.info("Mailbox scan complete; examined {} new message(s)", examined);
-        return examined;
+        if (cachedStore != null) {
+            try {
+                cachedStore.close();
+            } catch (Exception ignored) {
+                // best-effort
+            }
+            cachedStore = null;
+        }
     }
 
     /**
