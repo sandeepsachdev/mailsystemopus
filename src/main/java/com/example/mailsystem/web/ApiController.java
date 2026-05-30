@@ -9,6 +9,7 @@ import com.example.mailsystem.service.MailboxScanService;
 import com.example.mailsystem.service.MailingListService;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -97,5 +98,14 @@ public class ApiController {
     public Map<String, Object> scan() throws Exception {
         int examined = mailboxScanService.scan();
         return Map.of("examined", examined);
+    }
+
+    /**
+     * Returns configuration/validation problems (e.g. missing Gmail credentials) as a clean
+     * 400 with the actionable message instead of an opaque 500.
+     */
+    @ExceptionHandler({IllegalStateException.class, IllegalArgumentException.class})
+    public ResponseEntity<Map<String, String>> handleBadRequest(RuntimeException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
     }
 }
