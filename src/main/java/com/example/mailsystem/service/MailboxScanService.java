@@ -4,13 +4,17 @@ import com.example.mailsystem.config.MailSystemProperties;
 import com.example.mailsystem.domain.DeliveryStatus;
 import com.example.mailsystem.domain.EmailDelivery;
 import com.example.mailsystem.domain.EmailReply;
+import com.example.mailsystem.domain.ScanState;
 import com.example.mailsystem.repository.EmailDeliveryRepository;
 import com.example.mailsystem.repository.EmailReplyRepository;
+import com.example.mailsystem.repository.ScanStateRepository;
 import jakarta.mail.Address;
+import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
 import jakarta.mail.Message;
 import jakarta.mail.Session;
 import jakarta.mail.Store;
+import jakarta.mail.UIDFolder;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.search.ComparisonTerm;
 import jakarta.mail.search.ReceivedDateTerm;
@@ -37,6 +41,18 @@ import java.util.regex.Pattern;
  *       our sent message-ids, or whose sender + normalized subject match a delivery.</li>
  * </ul>
  * Runs on a fixed schedule and can also be triggered manually from the dashboard.
+ *
+ * <p>The scan is tuned to keep IMAP round-trips low:
+ * <ol>
+ *   <li><b>Incremental</b> — only messages with a UID greater than the last processed UID are
+ *       fetched (persisted in {@link ScanState}). The first run, or a {@code UIDVALIDITY} change,
+ *       bootstraps from a trailing date window.</li>
+ *   <li><b>Batched header prefetch</b> — a single {@link FetchProfile} pulls the envelope and the
+ *       few headers triage needs, instead of a network round-trip per property per message.</li>
+ *   <li><b>Lazy body download</b> — the full MIME body ({@link MailContentExtractor#flattenToText})
+ *       is only fetched for messages that triage has already identified as a bounce or a matched
+ *       reply, never for ordinary inbox mail.</li>
+ * </ol>
  */
 @Service
 public class MailboxScanService {
@@ -52,17 +68,23 @@ public class MailboxScanService {
     private static final Pattern MAILTRACK_MSGID =
             Pattern.compile("<([0-9a-fA-F]+)@mailsystem\\.local>");
 
+    /** Trailing window used to bootstrap the first scan (or after a UIDVALIDITY reset). */
+    private static final long BOOTSTRAP_WINDOW_SECONDS = 14L * 24 * 3600;
+
     private final MailSystemProperties properties;
     private final EmailDeliveryRepository deliveryRepository;
     private final EmailReplyRepository replyRepository;
+    private final ScanStateRepository scanStateRepository;
     private final AtomicBoolean scanning = new AtomicBoolean(false);
 
     public MailboxScanService(MailSystemProperties properties,
                               EmailDeliveryRepository deliveryRepository,
-                              EmailReplyRepository replyRepository) {
+                              EmailReplyRepository replyRepository,
+                              ScanStateRepository scanStateRepository) {
         this.properties = properties;
         this.deliveryRepository = deliveryRepository;
         this.replyRepository = replyRepository;
+        this.scanStateRepository = scanStateRepository;
     }
 
     @Scheduled(fixedDelayString = "${mailsystem.imap.poll-interval-ms:60000}",
@@ -79,7 +101,8 @@ public class MailboxScanService {
     }
 
     /**
-     * Reads recent mailbox messages and updates deliveries with any bounces/replies found.
+     * Reads new mailbox messages (those above the last processed UID) and updates deliveries with
+     * any bounces/replies found.
      *
      * @return the number of messages examined
      */
@@ -110,16 +133,37 @@ public class MailboxScanService {
             Folder folder = store.getFolder(cfg.getFolder());
             folder.open(Folder.READ_ONLY);
             try {
-                // Only look at recent mail to keep scans cheap on large mailboxes.
-                Date since = Date.from(Instant.now().minusSeconds(14L * 24 * 3600));
-                Message[] messages = folder.search(new ReceivedDateTerm(ComparisonTerm.GE, since));
+                UIDFolder uidFolder = (UIDFolder) folder;
+                ScanState state = loadOrInitState(cfg.getFolder(), uidFolder.getUIDValidity());
+
+                Message[] messages = selectNewMessages(folder, uidFolder, state);
+                if (messages.length > 0) {
+                    prefetchHeaders(folder, messages);
+                }
+
+                long highestUid = state.getLastUid();
                 for (Message message : messages) {
+                    long uid = uidFolder.getUID(message);
+                    // getMessagesByUID(start, LASTUID) can echo back the last message even when its
+                    // UID is below start; skip anything at or below the high-water mark.
+                    if (state.getLastUid() > 0 && uid <= state.getLastUid()) {
+                        continue;
+                    }
                     examined++;
                     try {
                         processMessage(message);
                     } catch (Exception ex) {
                         log.debug("Failed to process a message during scan: {}", ex.getMessage());
                     }
+                    if (uid > highestUid) {
+                        highestUid = uid;
+                    }
+                }
+
+                if (highestUid > state.getLastUid()) {
+                    state.setLastUid(highestUid);
+                    state.setUpdatedAt(Instant.now());
+                    scanStateRepository.save(state);
                 }
             } finally {
                 folder.close(false);
@@ -127,8 +171,55 @@ public class MailboxScanService {
         } finally {
             scanning.set(false);
         }
-        log.info("Mailbox scan complete; examined {} message(s)", examined);
+        log.info("Mailbox scan complete; examined {} new message(s)", examined);
         return examined;
+    }
+
+    /**
+     * Loads the persisted scan state for the folder, resetting it when the folder changed or the
+     * server reports a different {@code UIDVALIDITY} (which invalidates previously stored UIDs).
+     */
+    private ScanState loadOrInitState(String folderName, long uidValidity) {
+        ScanState state = scanStateRepository.findById(1L).orElseGet(() -> {
+            ScanState s = new ScanState();
+            s.setId(1L);
+            return s;
+        });
+        boolean reset = !folderName.equals(state.getFolder()) || state.getUidValidity() != uidValidity;
+        if (reset) {
+            state.setFolder(folderName);
+            state.setUidValidity(uidValidity);
+            state.setLastUid(0L); // 0 => bootstrap from the date window below
+        }
+        return state;
+    }
+
+    /**
+     * Returns the messages to examine: those with UID &gt; the last processed UID when we have a
+     * high-water mark, otherwise a one-time bootstrap over a trailing date window.
+     */
+    private Message[] selectNewMessages(Folder folder, UIDFolder uidFolder, ScanState state)
+            throws Exception {
+        if (state.getLastUid() > 0) {
+            // Cheap server-side UID range fetch; +1 so the last-seen message isn't re-processed.
+            return uidFolder.getMessagesByUID(state.getLastUid() + 1, UIDFolder.LASTUID);
+        }
+        Date since = Date.from(Instant.now().minusSeconds(BOOTSTRAP_WINDOW_SECONDS));
+        return folder.search(new ReceivedDateTerm(ComparisonTerm.GE, since));
+    }
+
+    /**
+     * Pulls the envelope and the handful of headers triage needs in a single batched round-trip,
+     * so the per-message property accesses below hit the local cache instead of the network.
+     */
+    private void prefetchHeaders(Folder folder, Message[] messages) throws Exception {
+        FetchProfile fp = new FetchProfile();
+        fp.add(FetchProfile.Item.ENVELOPE); // From, Subject, Date, Message-ID
+        fp.add(UIDFolder.FetchProfileItem.UID);
+        fp.add("Content-Type");
+        fp.add("In-Reply-To");
+        fp.add("References");
+        folder.fetch(messages, fp);
     }
 
     private void processMessage(Message message) throws Exception {
@@ -141,6 +232,7 @@ public class MailboxScanService {
 
     // ---- Bounce handling ---------------------------------------------------
 
+    /** Triage using only prefetched headers — no body download. */
     private boolean isBounce(Message message) throws Exception {
         String from = addressesToString(message.getFrom()).toLowerCase();
         String subject = Optional.ofNullable(message.getSubject()).orElse("").toLowerCase();
@@ -155,6 +247,7 @@ public class MailboxScanService {
     }
 
     private void handleBounce(Message message) throws Exception {
+        // Body download happens only here, after triage already confirmed this is a bounce.
         String text = MailContentExtractor.flattenToText(message);
 
         Optional<EmailDelivery> match = Optional.empty();
@@ -213,6 +306,8 @@ public class MailboxScanService {
             return; // already imported
         }
 
+        // matchReplyToDelivery uses only prefetched headers; the body is fetched afterwards,
+        // and only once we know the message actually matches one of our deliveries.
         EmailDelivery delivery = matchReplyToDelivery(message);
         if (delivery == null) {
             return;
