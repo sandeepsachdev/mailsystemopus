@@ -56,4 +56,22 @@ class TrackingIntegrationTest {
         assertEquals(1, reloaded.getOpenCount());
         assertEquals(DeliveryStatus.READ, reloaded.getStatus());
     }
+
+    @Test
+    void campaignPagesRenderWithoutLazyInitErrors() throws Exception {
+        Campaign campaign = new Campaign();
+        campaign.setSubject("Render test");
+        campaign.setBody("Body");
+        EmailDelivery delivery = new EmailDelivery();
+        delivery.setRecipientEmail("viewer@example.com");
+        delivery.setTrackingId("render-test-1");
+        delivery.setStatus(DeliveryStatus.SENT);
+        campaign.addDelivery(delivery);
+        Campaign saved = campaignRepository.save(campaign);
+
+        // The list page walks campaign.deliveries via the aggregate count methods.
+        mockMvc.perform(get("/campaigns")).andExpect(status().isOk());
+        // The detail page additionally walks delivery.replies.
+        mockMvc.perform(get("/campaigns/" + saved.getId())).andExpect(status().isOk());
+    }
 }

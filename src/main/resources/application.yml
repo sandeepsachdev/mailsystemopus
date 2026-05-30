@@ -39,7 +39,9 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    open-in-view: false
+    # Keep the persistence context open during view rendering so the Thymeleaf templates can
+    # walk lazy associations (campaign -> deliveries -> replies) on the request thread.
+    open-in-view: true
     properties:
       hibernate:
         format_sql: false
